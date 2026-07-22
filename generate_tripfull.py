@@ -242,6 +242,28 @@ def gemini_generate(prompt, max_retries=5):
     return text.strip()
 
 
+def today_exists(title):
+    """Gemini 호출 '전에' 오늘자 Cowork 파일이 이미 있는지 수신기에 물어본다.
+    있으면 True → 폴백은 Gemini·Tavily를 전혀 쓰지 않고 종료(quota 절약).
+    확인 실패(네트워크 등) 시에는 안전하게 False를 반환해 폴백 생성을 계속한다
+    (메일 누락보다 폴백 발송이 낫다)."""
+    try:
+        out = http_post_json(
+            os.environ["TRIPFULL_APPS_SCRIPT_URL"],
+            {
+                "token": os.environ["APPS_SCRIPT_TOKEN"],
+                "action": "check",
+                "title": title,
+                "parentId": DRIVE_PARENT_ID,
+            },
+            timeout=60,
+        )
+        return bool(out.get("exists"))
+    except Exception as e:
+        print(f"[warn] 존재 확인 실패({e}) → 폴백 생성을 계속 진행", file=sys.stderr)
+        return False
+
+
 def save_to_drive(title, text):
     """트립풀 수신기(doPost)로 마크다운 텍스트를 전송. 오늘자 문서 존재 시 수신기가 skip."""
     out = http_post_json(
@@ -282,7 +304,13 @@ def main():
     weekday_kr = "월화수목금토일"[now.weekday()] + "요일"
     # ★ 제목은 Cowork(Claude)가 만드는 것과 '동일'해야 skip이 작동한다.
     title = f"트립풀 브리핑 {date_str}"
-    print(f"[info] {title} 폴백 생성 시작 ({weekday_kr})")
+    print(f"[info] {title} 폴백 시작 ({weekday_kr})")
+
+    # ★ quota 절약: Gemini/Tavily를 부르기 '전에' 오늘자 Cowork 파일 유무를 먼저 확인.
+    #   있으면(=Claude 정상) 아무 API도 쓰지 않고 종료한다.
+    if today_exists(title):
+        print("[info] 오늘 Cowork 파일이 이미 있음 → Gemini·Tavily 호출 생략(quota 절약). 정상 종료.")
+        return
 
     research = collect_research(now)
     if not research.strip():
