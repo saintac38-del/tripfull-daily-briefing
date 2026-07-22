@@ -1,34 +1,102 @@
-name: Daily Tripfull Briefing (fallback)
+/**
+ * 트립풀 브리핑 폴백 수신기 (Apps Script 웹앱, doPost)
+ * ------------------------------------------------------------------
+ * generate_tripfull.py 가 POST 하는 마크다운 텍스트를 받아
+ * 드라이브 '트립풀 브리핑' 폴더에 Google Docs 로 저장한다.
+ *
+ * 두 가지 요청을 처리한다(둘 다 doPost, body.action 으로 구분):
+ *   1) action:"check"  → 오늘자 문서 존재 여부만 반환 { ok:true, exists:bool }
+ *      (Python 이 Gemini 호출 '전에' 물어봐서, 있으면 API를 아예 안 쓰고 종료 → quota 절약)
+ *   2) action 없음(기본, 저장) → 오늘자 문서가 있으면 skip, 없으면 마크다운→Docs 저장
+ *
+ * ★ 선택 발송의 핵심(skip 로직):
+ *   같은 이름( "트립풀 브리핑 YYYY-MM-DD" )의 파일이 폴더에 이미 있으면
+ *   (= Cowork/Claude 가 먼저 만든 리치판) 저장하지 않고 skipped:true 를 반환한다.
+ *   → 발송기(v18)는 폴더에 남은 '한 개' 문서를 09:00 에 파싱·발송한다.
+ *
+ * 배포:
+ *   1) script.google.com 새 프로젝트 → 이 코드 붙여넣기
+ *   2) 프로젝트 설정 → 스크립트 속성에 TRIPFULL_TOKEN 추가(임의 비밀문자열,
+ *      GitHub Secret APPS_SCRIPT_TOKEN 과 동일 값)
+ *   3) 배포 → 새 배포 → 유형: 웹 앱 / 실행: 나 / 액세스: 모든 사용자
+ *   4) 배포 URL 을 GitHub Secret TRIPFULL_APPS_SCRIPT_URL 에 등록
+ *
+ *   ⚠️ 이 코드를 수정한 뒤에는 반드시 재배포해야 반영된다:
+ *      배포 → 배포 관리 → (기존 배포) 편집 → 버전: 새 버전 → 배포
+ *      ('새 버전'으로 하면 URL 이 그대로 유지되어 Secret 을 안 바꿔도 됨)
+ */
 
-# 폴백 실행 시각. Cowork(Claude)가 08:0x KST에 먼저 만들 시간을 준 뒤,
-# 발송기(Apps Script v18, 09:00 KST) 이전에 마감되도록 08:40 KST에 실행.
-# 08:40 KST = 23:40 UTC. GitHub cron은 UTC 기준이며 수 분~수십 분 지연될 수 있음.
-on:
-  schedule:
-    - cron: "40 23 * * *"
-  workflow_dispatch: {}   # 수동 실행 버튼(최초 테스트용)
+// 저장 폴더(트립풀 브리핑). POST parentId 가 오면 그 값을 우선 사용.
+var DEFAULT_FOLDER_ID = '11l9noIRPwfgGrP0_STRa7C8cGuloEgKG';
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return _json({ ok: false, error: 'no post body' });
+    }
+    var body = JSON.parse(e.postData.contents);
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+    // 1) 토큰 검증
+    var expected = PropertiesService.getScriptProperties().getProperty('TRIPFULL_TOKEN');
+    if (!expected || body.token !== expected) {
+      return _json({ ok: false, error: 'invalid token' });
+    }
 
-      - name: Install deps
-        run: pip install -r requirements.txt
+    var title = (body.title || '').trim();
+    var parentId = (body.parentId || DEFAULT_FOLDER_ID).trim();
+    if (!title) {
+      return _json({ ok: false, error: 'title required' });
+    }
 
-      - name: Generate & save tripfull briefing (fallback)
-        env:
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          TRIPFULL_APPS_SCRIPT_URL: ${{ secrets.TRIPFULL_APPS_SCRIPT_URL }}
-          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
-          TRIPFULL_DRIVE_PARENT_ID: ${{ secrets.TRIPFULL_DRIVE_PARENT_ID }}
-        run: python generate_tripfull.py
+    var folder = DriveApp.getFolderById(parentId);
+    var existing = folder.getFilesByName(title);
+    var exists = existing.hasNext();
+
+    // 2) 존재 확인 전용(quota 절약용) — Gemini 호출 전 Python 이 먼저 물어봄
+    if (body.action === 'check') {
+      return _json({ ok: true, exists: exists });
+    }
+
+    // 3) 저장. 오늘자 문서가 이미 있으면 Cowork 우선 → skip
+    if (exists) {
+      var f = existing.next();
+      return _json({ ok: true, skipped: true, id: f.getId(), name: title });
+    }
+
+    var text = body.text || '';
+    if (!text) {
+      return _json({ ok: false, error: 'text required' });
+    }
+
+    // 4) 마크다운 텍스트 → Google Docs 생성(발송기 v18 이 본문 텍스트를 파싱)
+    var doc = DocumentApp.create(title);
+    doc.getBody().setText(text);
+    doc.saveAndClose();
+
+    // 5) 루트에서 목표 폴더로 이동
+    var file = DriveApp.getFileById(doc.getId());
+    folder.addFile(file);
+    try { DriveApp.getRootFolder().removeFile(file); } catch (ignore) {}
+
+    return _json({
+      ok: true,
+      skipped: false,
+      id: file.getId(),
+      name: title,
+      url: 'https://drive.google.com/open?id=' + file.getId()
+    });
+  } catch (err) {
+    return _json({ ok: false, error: String(err) });
+  }
+}
+
+// 상태 점검용(브라우저로 URL 열면 200)
+function doGet() {
+  return _json({ ok: true, service: 'tripfull-receiver', ts: new Date().toISOString() });
+}
+
+function _json(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
