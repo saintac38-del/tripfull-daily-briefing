@@ -1,0 +1,34 @@
+name: Daily Tripfull Briefing (fallback)
+
+# 폴백 실행 시각. Cowork(Claude)가 08:0x KST에 먼저 만들 시간을 준 뒤,
+# 발송기(Apps Script v18, 09:00 KST) 이전에 마감되도록 08:40 KST에 실행.
+# 08:40 KST = 23:40 UTC. GitHub cron은 UTC 기준이며 수 분~수십 분 지연될 수 있음.
+on:
+  schedule:
+    - cron: "40 23 * * *"
+  workflow_dispatch: {}   # 수동 실행 버튼(최초 테스트용)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Generate & save tripfull briefing (fallback)
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          TRIPFULL_APPS_SCRIPT_URL: ${{ secrets.TRIPFULL_APPS_SCRIPT_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+          TRIPFULL_DRIVE_PARENT_ID: ${{ secrets.TRIPFULL_DRIVE_PARENT_ID }}
+        run: python generate_tripfull.py
