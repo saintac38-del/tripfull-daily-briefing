@@ -35,10 +35,11 @@ import urllib.error
 # 트립풀 브리핑 폴더(운영). 인스타와 달리 '이 폴더에 경쟁 저장'하는 것이 정상 동작이므로
 # 기본값을 둔다. 필요 시 환경변수로 덮어쓸 수 있다(테스트 폴더 등).
 DEFAULT_TRIPFULL_FOLDER = "11l9noIRPwfgGrP0_STRa7C8cGuloEgKG"
-DRIVE_PARENT_ID = os.environ.get("TRIPFULL_DRIVE_PARENT_ID", DEFAULT_TRIPFULL_FOLDER)
+# 'or' 사용: 시크릿 미설정 시 GitHub이 빈 문자열("")을 넘겨도 기본값으로 떨어지게 한다.
+DRIVE_PARENT_ID = os.environ.get("TRIPFULL_DRIVE_PARENT_ID") or DEFAULT_TRIPFULL_FOLDER
 
 # 'gemini-flash-latest' 별칭은 무료 티어에서 503(과부하)이 잦았음 → 정식 모델명 기본.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
 
 KST = zoneinfo.ZoneInfo("Asia/Seoul")
 
